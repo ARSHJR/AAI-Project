@@ -1,3 +1,5 @@
+import json
+
 from app.agents.nodes import decision_node
 
 
@@ -48,9 +50,34 @@ def test_low_confidence_always_escalates_regardless_of_intent():
 
 
 def test_multi_intent_conflict_escalates():
-    state = _base_state(intent="refund", multi_intent=["refund", "order_tracking"])
+    # tracking + refund is the spec's own example of a genuine conflict -
+    # the two point to different remedies and need human disambiguation.
+    state = _base_state(
+        intent="order_tracking",
+        multi_intent=["refund"],
+        policy_match={"eligible": True, "reason": "x", "policy": {}},
+    )
     result = decision_node(state)
     assert result["decision"] == "escalation"
+    assert result["decision_reasoning"]["cause"] == "multi_intent_conflict"
+
+
+def test_compatible_secondary_intent_does_not_escalate():
+    # "wrong item, need a refund" is one request, not a conflict - wrong_item
+    # is the stated cause of the refund, so this should still auto-resolve.
+    state = _base_state(
+        intent="refund",
+        multi_intent=["wrong_item"],
+        policy_match={"eligible": True, "reason": "x", "policy": {}},
+    )
+    result = decision_node(state)
+    assert result["decision"] == "refund"
+
+
+def test_compatible_tracking_delay_secondary_intent_does_not_escalate():
+    state = _base_state(intent="order_tracking", multi_intent=["delivery_delay"])
+    result = decision_node(state)
+    assert result["decision"] == "reply_only"
 
 
 def test_customer_not_found_escalates():
@@ -70,3 +97,16 @@ def test_return_eligible_initiates_return():
     state = _base_state(intent="return", policy_match={"eligible": True, "reason": "x", "policy": {}})
     result = decision_node(state)
     assert result["decision"] == "return_initiation"
+
+
+def test_decision_update_and_logged_event_are_json_serializable():
+    """Regression test: decision_node once logged its own in-progress update
+    dict as the event payload, then mutated that same dict with the logged
+    event afterwards - creating a self-reference (update -> events ->
+    payload -> update -> ...) that broke JSON serialization when persisting
+    ticket_events to Supabase. The payload must be an independent snapshot."""
+    state = _base_state(intent="order_tracking")
+    result = decision_node(state)
+    json.dumps(result)  # raises ValueError("Circular reference detected") on regression
+    logged_payload = result["events"][-1]["payload"]
+    assert logged_payload is not result

@@ -166,7 +166,18 @@ def resolve_ticket(ticket: dict) -> dict:
     if customer:
         order_id = (final_state.get("order") or {}).get("order_id")
         contact_service.record_contact(customer["id"], order_id, ticket_id)
-        if final_status == "auto_resolved":
+        # A "reply_only" outcome is purely informational - it doesn't change
+        # anything about the customer's underlying order problem, so a
+        # customer who contacts again about the same stuck order must still
+        # count toward the repeat-contact threshold. Only a concrete remedy
+        # (credit/refund/return issued, or a resolved escalation) clears it.
+        if final_status == "auto_resolved" and final_state.get("decision") != "reply_only":
             contact_service.mark_resolved(ticket_id)
 
-    return {**ticket, **final_state, "status": final_status, "resolution_time_ms": resolution_ms}
+    return {
+        **ticket,
+        **final_state,
+        "status": final_status,
+        "resolution_time_ms": resolution_ms,
+        "action_taken": final_state.get("decision"),
+    }

@@ -1,5 +1,12 @@
 -- PS-14 Multilingual Order Support Copilot — initial schema
 -- Run via Supabase SQL editor or `supabase db push`.
+--
+-- Safe to re-run: every CREATE TABLE/INDEX uses IF NOT EXISTS, triggers are
+-- dropped first, and policies are dropped-then-created. If a run fails
+-- partway (e.g. a transient "password authentication failed for user
+-- postgres" right after creating a brand-new project — wait ~1-2 minutes
+-- for the project to finish provisioning and paste the whole script again),
+-- just paste the whole script again rather than trying to resume mid-way.
 
 create extension if not exists pgcrypto;
 create extension if not exists vector;
@@ -72,7 +79,7 @@ create table if not exists payments (
 -- ============================================================
 create table if not exists policies (
   id uuid primary key default gen_random_uuid(),
-  code text not null, -- e.g. "6.1"
+  code text not null unique, -- e.g. "6.1"
   title text not null,
   category text not null check (category in (
     'delivery_delay','refund','return','wrong_item','damaged_item',
@@ -97,8 +104,12 @@ create table if not exists tickets (
   id uuid primary key default gen_random_uuid(),
   channel text not null check (channel in ('chat','email','whatsapp')),
   thread_id text not null,
-  customer_id text references customers(id),
-  order_id text references orders(id),
+  -- Deliberately NOT a foreign key: a channel hint may name a customer_id or
+  -- order_id that doesn't exist (e.g. a typo'd order number). The agent must
+  -- discover that via identify_and_retrieve_node and escalate gracefully,
+  -- not have ticket ingestion itself rejected by a DB constraint.
+  customer_id text,
+  order_id text,
   raw_message text not null,
   detected_language text, -- en / hi / mr
   script text, -- native / romanized
@@ -224,29 +235,56 @@ alter table staff_profiles enable row level security;
 -- member via Supabase Auth JWT and checks their role. RLS here is a defense
 -- in depth layer for any direct client access (e.g. if Supabase client is
 -- ever used from the frontend for read-only dashboards).
+-- CREATE POLICY has no IF NOT EXISTS, so drop-then-create makes this
+-- migration safe to re-run after a partial/interrupted execution.
+drop policy if exists staff_read_all_tickets on tickets;
 create policy staff_read_all_tickets on tickets for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_events on ticket_events;
 create policy staff_read_all_events on ticket_events for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_actions on actions;
 create policy staff_read_all_actions on actions for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_escalations on escalations;
 create policy staff_read_all_escalations on escalations for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_audit on audit_log;
 create policy staff_read_all_audit on audit_log for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_policies on policies;
 create policy staff_read_all_policies on policies for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_customers on customers;
 create policy staff_read_all_customers on customers for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_orders on orders;
 create policy staff_read_all_orders on orders for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_order_items on order_items;
 create policy staff_read_all_order_items on order_items for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_shipment_events on shipment_events;
 create policy staff_read_all_shipment_events on shipment_events for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_payments on payments;
 create policy staff_read_all_payments on payments for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_all_contact_history on contact_history;
 create policy staff_read_all_contact_history on contact_history for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists staff_read_own_profile on staff_profiles;
 create policy staff_read_own_profile on staff_profiles for select
   using (auth.uid() = id or auth.role() = 'authenticated');

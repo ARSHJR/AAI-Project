@@ -72,7 +72,7 @@ def intent_node(state: dict) -> dict:
         intent, confidence, multi_intent = "other", 0.0, []
 
     update = {"intent": intent, "intent_confidence": confidence, "multi_intent": multi_intent}
-    update.update(_log_event(state, "intent", update))
+    update.update(_log_event(state, "intent", dict(update)))
     return update
 
 
@@ -136,15 +136,37 @@ def repeat_contact_node(state: dict) -> dict:
     if not customer:
         return {"repeat_contact_count": 0, "repeat_contact_escalate": False}
     order_id = (state.get("order") or {}).get("order_id") or state.get("order_id_hint")
-    count = contact_service.unresolved_contact_count(customer["id"], order_id)
+    # +1 because this ticket's own contact_history row hasn't been recorded
+    # yet (that happens after the graph finishes) - "3rd contact" must count
+    # the current message, not just the ones strictly before it.
+    count = contact_service.unresolved_contact_count(customer["id"], order_id) + 1
     escalate = count >= get_settings().repeat_contact_escalation_threshold
     update = {"repeat_contact_count": count, "repeat_contact_escalate": escalate}
-    update.update(_log_event(state, "repeat_contact", update))
+    update.update(_log_event(state, "repeat_contact", dict(update)))
     return update
 
 
 # 6. Action Decision -----------------------------------------------------------
 HIGH_VALUE_INTENTS = {"refund", "wrong_item", "return"}
+
+# Secondary intents the LLM flags that describe the SAME underlying request
+# as the primary intent rather than a genuinely different one needing human
+# disambiguation - e.g. "wrong item, need a refund" is one request (wrong_item
+# is the stated cause of the refund), and "order is late, when will it
+# arrive" is one request (delivery_delay is why the customer is tracking).
+# A real conflict looks like the spec's own example: tracking + refund in one
+# message, which point to different remedies.
+COMPATIBLE_INTENT_GROUPS = [
+    {"order_tracking", "delivery_delay"},
+    {"refund", "wrong_item", "damaged_item"},
+]
+
+
+def _has_conflicting_multi_intent(primary: str, multi_intent: list[str]) -> bool:
+    if not multi_intent:
+        return False
+    group = next((g for g in COMPATIBLE_INTENT_GROUPS if primary in g), {primary})
+    return any(secondary != primary and secondary not in group for secondary in multi_intent)
 
 
 def decision_node(state: dict) -> dict:
@@ -160,7 +182,7 @@ def decision_node(state: dict) -> dict:
     elif state.get("intent_confidence", 0) < settings.intent_confidence_auto_threshold:
         decision = "escalation"
         reasoning["cause"] = "low_intent_confidence"
-    elif state.get("multi_intent"):
+    elif _has_conflicting_multi_intent(state.get("intent", "other"), state.get("multi_intent", [])):
         decision = "escalation"
         reasoning["cause"] = "multi_intent_conflict"
     elif state.get("intent") == "order_tracking":
@@ -183,7 +205,7 @@ def decision_node(state: dict) -> dict:
         reasoning["cause"] = "unsupported_or_ambiguous_intent"
 
     update = {"decision": decision, "decision_reasoning": reasoning}
-    update.update(_log_event(state, "decision", update))
+    update.update(_log_event(state, "decision", dict(update)))
     return update
 
 
@@ -261,7 +283,7 @@ def escalation_node(state: dict) -> dict:
         "escalation_summary": summary,
         "status": "escalated",
     }
-    update.update(_log_event(state, "escalation", update))
+    update.update(_log_event(state, "escalation", dict(update)))
     return update
 
 
