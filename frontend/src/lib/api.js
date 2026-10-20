@@ -15,6 +15,13 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    // One automatic retry for idempotent reads that hit a transient 5xx / network drop.
+    const config = error.config;
+    const status = error.response?.status;
+    if (config && config.method === "get" && !config._retried && (!status || status >= 500)) {
+      config._retried = true;
+      return api(config);
+    }
     if (error.response?.status === 401) {
       localStorage.removeItem("access_token");
       localStorage.removeItem("staff");

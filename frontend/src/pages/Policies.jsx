@@ -1,63 +1,130 @@
 import { useEffect, useState } from "react";
+import { BookOpen } from "lucide-react";
 import { listPolicies } from "../lib/api";
+import { fmtDate, titleCase } from "../lib/format";
+import { Card, EmptyState, ErrorState, Mono, PageHeader, Skeleton } from "../components/ui";
+import StatusChip from "../components/StatusChip";
+
+// What happens when the rule is satisfied, keyed by policy category.
+const OUTCOME = {
+  delivery_delay: "Issue delay compensation credit",
+  refund: "Approve refund automatically",
+  wrong_item: "Approve refund automatically",
+  damaged_item: "Approve refund automatically",
+  return: "Initiate return and generate label",
+  high_value: "Escalate to supervisor",
+  escalation: "Route to human agent",
+  general: "Route to human review",
+  cancellation: "Process cancellation",
+};
+
+const CRITERIA = {
+  delay_hours_gt: ["Delay exceeds", (v) => `${v} hours past ETA`],
+  auto_approve_max_inr: ["Order value up to", (v) => `₹${Number(v).toLocaleString("en-IN")}`],
+  threshold_inr: ["Order value above", (v) => `₹${Number(v).toLocaleString("en-IN")}`],
+  window_days: ["Within", (v) => `${v} days of delivery`],
+};
+
+function Criteria({ conditions }) {
+  const entries = Object.entries(conditions || {});
+  if (!entries.length) return <span className="text-faint">Evaluated case by case</span>;
+  return (
+    <ul className="space-y-1">
+      {entries.map(([k, v]) => {
+        const c = CRITERIA[k];
+        return (
+          <li key={k} className="text-[13px]">
+            {c ? (
+              <>
+                <span className="text-muted">{c[0]} </span>
+                <span className="tnum font-medium text-ink">{c[1](v)}</span>
+              </>
+            ) : (
+              <Mono>
+                {k}: {String(v)}
+              </Mono>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 export default function Policies() {
-  const [policies, setPolicies] = useState([]);
+  const [policies, setPolicies] = useState(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    listPolicies().then(setPolicies);
+    listPolicies()
+      .then(setPolicies)
+      .catch(() => setError("Could not load policies."));
   }, []);
 
-  const grouped = policies.reduce((acc, p) => {
-    (acc[p.category] = acc[p.category] || []).push(p);
-    return acc;
-  }, {});
+  const sorted = (policies || []).slice().sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Support Policies</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          Active, versioned rules the decision agent evaluates against order facts. Every automated
-          action traces back to one of these clauses.
-        </p>
-      </div>
+    <>
+      <PageHeader
+        eyebrow="Governance"
+        title="Policies"
+        description="The versioned rules the decision engine evaluates against order facts. Every automated action traces back to one of these."
+      />
 
-      {Object.entries(grouped).map(([category, items]) => (
-        <div key={category}>
-          <h2 className="text-sm font-semibold text-slate-600 uppercase tracking-wide mb-2">
-            {category.replace(/_/g, " ")}
-          </h2>
-          <div className="space-y-3">
-            {items.map((p) => (
-              <div key={p.id} className="bg-white rounded-xl ring-1 ring-slate-200 p-5">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-slate-800">
-                    Policy {p.code} — {p.title}
-                  </div>
-                  <span className="text-xs text-slate-400">v{p.version}</span>
-                </div>
-                <p className="text-sm text-slate-600 mt-2">{p.body}</p>
-                {p.conditions && Object.keys(p.conditions).length > 0 && (
-                  <div className="flex gap-2 mt-3 flex-wrap">
-                    {Object.entries(p.conditions).map(([k, v]) => (
-                      <span key={k} className="text-xs bg-slate-100 text-slate-600 rounded-full px-3 py-1">
-                        {k.replace(/_/g, " ")}: {String(v)}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
+      {error && <ErrorState>{error}</ErrorState>}
+      {!policies && !error && <Skeleton className="h-96 w-full" />}
 
-      {policies.length === 0 && (
-        <div className="text-sm text-slate-400">
-          No policies loaded. Run the seed script to populate support policies.
-        </div>
+      {policies && policies.length === 0 && (
+        <Card>
+          <EmptyState icon={BookOpen} title="No policies loaded">
+            Run the seed script to populate support policies.
+          </EmptyState>
+        </Card>
       )}
-    </div>
+
+      {sorted.length > 0 && (
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full min-w-[960px] text-left text-[13.5px]">
+              <thead>
+                <tr className="border-b border-line bg-sunken text-[12px] font-semibold text-muted">
+                  <th className="px-5 py-2.5">Code</th>
+                  <th className="px-3 py-2.5">Policy</th>
+                  <th className="px-3 py-2.5">Category</th>
+                  <th className="px-3 py-2.5">Criteria</th>
+                  <th className="px-3 py-2.5">Outcome</th>
+                  <th className="px-3 py-2.5">Version</th>
+                  <th className="px-3 py-2.5">Effective</th>
+                  <th className="px-5 py-2.5">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((p) => (
+                  <tr key={p.id} className="border-b border-line align-top last:border-0">
+                    <td className="px-5 py-4">
+                      <Mono className="rounded bg-canvas px-1.5 py-0.5 font-medium text-ink">{p.code}</Mono>
+                    </td>
+                    <td className="max-w-[360px] px-3 py-4">
+                      <div className="font-semibold text-ink">{p.title}</div>
+                      <p className="mt-1 text-[12.5px] leading-relaxed text-muted">{p.body}</p>
+                    </td>
+                    <td className="px-3 py-4 text-body">{titleCase(p.category)}</td>
+                    <td className="px-3 py-4">
+                      <Criteria conditions={p.conditions} />
+                    </td>
+                    <td className="px-3 py-4 text-body">{OUTCOME[p.category] || "—"}</td>
+                    <td className="tnum px-3 py-4 text-body">v{p.version}</td>
+                    <td className="whitespace-nowrap px-3 py-4 text-body">{fmtDate(p.effective_from)}</td>
+                    <td className="px-5 py-4">
+                      <StatusChip value={p.is_active ? "active" : "inactive"} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </>
   );
 }
